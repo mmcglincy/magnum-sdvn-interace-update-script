@@ -56,10 +56,13 @@ function readCsvRows(string $path): array
 }
 
 /**
- * Build round map: [round => [lineName => deviceName]].
+ * Build round map: [roundLabel => [lineName => deviceName]].
+ *
+ * - round labels can be decimals (example: 2.5)
+ * - rows without a specified move round are skipped
  *
  * @param array<int, array<int, string|null>> $lookupRows
- * @return array<int, array<string, string>>
+ * @return array<string, array<string, string>>
  */
 function buildRoundMap(array $lookupRows): array
 {
@@ -81,44 +84,56 @@ function buildRoundMap(array $lookupRows): array
             continue;
         }
 
-        $round = (int) $roundRaw;
-        if ($round < 2) {
+        $roundValue = (float) $roundRaw;
+        if ($roundValue < 2.0) {
             continue;
         }
 
-        if (!isset($roundMap[$round])) {
-            $roundMap[$round] = [];
+        if (!isset($roundMap[$roundRaw])) {
+            $roundMap[$roundRaw] = [];
         }
 
         // If duplicate line names exist in same round, later row wins.
-        $roundMap[$round][$lineName] = $deviceName;
+        $roundMap[$roundRaw][$lineName] = $deviceName;
     }
 
-    ksort($roundMap);
     return $roundMap;
 }
 
 /**
- * Apply replacements for rounds 2..$upToRound (cumulative).
+ * Get round labels sorted by numeric value (ascending).
+ *
+ * @param array<string, array<string, string>> $roundMap
+ * @return array<int, string>
+ */
+function getSortedRoundLabels(array $roundMap): array
+{
+    $roundLabels = array_keys($roundMap);
+    usort(
+        $roundLabels,
+        static function (string $a, string $b): int {
+            $valueCompare = (float) $a <=> (float) $b;
+            if ($valueCompare !== 0) {
+                return $valueCompare;
+            }
+
+            // Deterministic tie-breaker if numeric values are equal.
+            return strcmp($a, $b);
+        }
+    );
+
+    return $roundLabels;
+}
+
+/**
+ * Apply replacements from a prepared line->device map.
  *
  * @param array<int, array<int, string|null>> $targetRows
- * @param array<int, array<string, string>> $roundMap
+ * @param array<string, string> $effectiveMap
  * @return array<int, array<int, string|null>>
  */
-function applyCumulativeRound(array $targetRows, array $roundMap, int $upToRound): array
+function applyDeviceMap(array $targetRows, array $effectiveMap): array
 {
-    $effectiveMap = [];
-
-    foreach ($roundMap as $round => $lineToDevice) {
-        if ($round > $upToRound) {
-            break;
-        }
-
-        foreach ($lineToDevice as $lineName => $deviceName) {
-            $effectiveMap[$lineName] = $deviceName;
-        }
-    }
-
     if ($effectiveMap === []) {
         return $targetRows;
     }
@@ -165,32 +180,41 @@ function writeCsvRows(string $path, array $rows): void
  * Recursively write one output file per round.
  *
  * @param array<int, array<int, string|null>> $targetRows
- * @param array<int, array<string, string>> $roundMap
+ * @param array<int, string> $roundLabels
+ * @param array<string, array<string, string>> $roundMap
+ * @param array<string, string> $effectiveMap
  */
 function processRoundsRecursively(
-    int $currentRound,
-    int $maxRound,
+    int $roundIndex,
+    array $roundLabels,
     array $targetRows,
     array $roundMap,
+    array $effectiveMap,
     string $outputBasePath,
     string $dateStamp,
     string $extension
 ): void {
-    if ($currentRound > $maxRound) {
+    if (!isset($roundLabels[$roundIndex])) {
         return;
     }
 
-    $updatedRows = applyCumulativeRound($targetRows, $roundMap, $currentRound);
-    $outputPath = "{$outputBasePath}-{$currentRound}-{$dateStamp}{$extension}";
+    $roundLabel = $roundLabels[$roundIndex];
+    foreach ($roundMap[$roundLabel] as $lineName => $deviceName) {
+        $effectiveMap[$lineName] = $deviceName;
+    }
+
+    $updatedRows = applyDeviceMap($targetRows, $effectiveMap);
+    $outputPath = "{$outputBasePath}-{$roundLabel}-{$dateStamp}{$extension}";
     writeCsvRows($outputPath, $updatedRows);
 
     echo "Wrote: {$outputPath}\n";
 
     processRoundsRecursively(
-        $currentRound + 1,
-        $maxRound,
+        $roundIndex + 1,
+        $roundLabels,
         $targetRows,
         $roundMap,
+        $effectiveMap,
         $outputBasePath,
         $dateStamp,
         $extension
@@ -207,8 +231,7 @@ try {
         exit(0);
     }
 
-    $rounds = array_keys($roundMap);
-    $maxRound = (int) max($rounds);
+    $roundLabels = getSortedRoundLabels($roundMap);
 
     $targetInfo = pathinfo($targetPath);
     $dir = $targetInfo['dirname'] ?? '.';
@@ -218,7 +241,7 @@ try {
 
     $dateStamp = date('Y-m-d');
 
-    processRoundsRecursively(2, $maxRound, $targetRows, $roundMap, $outputBasePath, $dateStamp, $extension);
+    processRoundsRecursively(0, $roundLabels, $targetRows, $roundMap, [], $outputBasePath, $dateStamp, $extension);
 } catch (Throwable $e) {
     fwrite(STDERR, "Error: " . $e->getMessage() . "\n");
     exit(1);
