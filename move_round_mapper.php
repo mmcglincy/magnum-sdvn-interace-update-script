@@ -273,11 +273,12 @@ function writeCsvRows(string $path, array $rows): void
 
 /**
  * Write per-interface output files for a given round.
+ * Pattern: YYYY-MM-DD-HH-MM-<interface_name>-<move round>.csv
  *
  * @param array<int, array<int, string|null>> $rows
  * @param array<int, string> $interfaceNames
  */
-function writeInterfaceOutputs(array $rows, array $interfaceNames, string $outputDir, string $roundLabel, string $dateStamp): void
+function writeInterfaceOutputs(array $rows, array $interfaceNames, string $outputDir, string $roundLabel, string $timestampPrefix): void
 {
     foreach ($interfaceNames as $interfaceName) {
         $filteredRows = [];
@@ -291,7 +292,7 @@ function writeInterfaceOutputs(array $rows, array $interfaceNames, string $outpu
         $interfaceFilePart = sanitizeFilenamePart($interfaceName);
         $interfacePath = rtrim($outputDir, DIRECTORY_SEPARATOR)
             . DIRECTORY_SEPARATOR
-            . "{$dateStamp}-{$interfaceFilePart}-{$roundLabel}.csv";
+            . "{$timestampPrefix}-{$interfaceFilePart}-{$roundLabel}.csv";
         writeCsvRows($interfacePath, $filteredRows);
         echo "Wrote: {$interfacePath}\n";
     }
@@ -299,6 +300,7 @@ function writeInterfaceOutputs(array $rows, array $interfaceNames, string $outpu
 
 /**
  * Write outputs for each move round.
+ * Total pattern: YYYY-MM-DD-HH-MM-total-<move round>.csv
  *
  * @param array<int, array<int, string|null>> $targetRows
  * @param array<int, string> $roundLabels
@@ -311,7 +313,7 @@ function processRounds(
     array $roundMap,
     array $interfaceNames,
     string $outputDir,
-    string $dateStamp
+    string $timestampPrefix
 ): void {
     $effectiveMap = [];
     foreach ($roundLabels as $roundLabel) {
@@ -322,11 +324,11 @@ function processRounds(
         $updatedRows = applyDeviceMap($targetRows, $effectiveMap);
         $outputPath = rtrim($outputDir, DIRECTORY_SEPARATOR)
             . DIRECTORY_SEPARATOR
-            . "{$dateStamp}-total-{$roundLabel}.csv";
+            . "{$timestampPrefix}-total-{$roundLabel}.csv";
         writeCsvRows($outputPath, $updatedRows);
         echo "Wrote: {$outputPath}\n";
 
-        writeInterfaceOutputs($updatedRows, $interfaceNames, $outputDir, $roundLabel, $dateStamp);
+        writeInterfaceOutputs($updatedRows, $interfaceNames, $outputDir, $roundLabel, $timestampPrefix);
     }
 }
 
@@ -347,9 +349,9 @@ try {
     $dir = $targetInfo['dirname'] ?? '.';
     $outputDir = $dir;
 
-    $dateStamp = date('Y-m-d');
+    $timestampPrefix = date('Y-m-d-H-i');
 
-    processRounds($roundLabels, $targetRows, $roundMap, $interfaceNames, $outputDir, $dateStamp);
+    processRounds($roundLabels, $targetRows, $roundMap, $interfaceNames, $outputDir, $timestampPrefix);
 } catch (Throwable $e) {
     fwrite(STDERR, "Error: " . $e->getMessage() . "\n");
     exit(1);
