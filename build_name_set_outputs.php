@@ -205,7 +205,7 @@ try {
 
         foreach ($entries as $entry) {
             $name = $entry['name'];
-            $nameItxrPattern = '/^' . preg_quote($name, '/') . '-ITXR$/i';
+            $nameItxrPattern = '/^' . preg_quote($name, '/') . '\s+ITXR$/i';
             $replacementOld = 'z-old-' . $name;
 
             foreach ($nameSetRows as $rowIndex => $nameSetRow) {
