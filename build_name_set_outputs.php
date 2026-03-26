@@ -183,6 +183,46 @@ function normalizeNameSetRow(array $row): array
     return $normalized;
 }
 
+/**
+ * Final pass before write:
+ * - If previous TOPS is z-old-<name> and current TOPS is <name>,
+ *   copy Description from previous row into current row.
+ *
+ * @param array<int, array<int, string|null>> $rows
+ * @return array<int, array<int, string>>
+ */
+function applyFinalDescriptionPass(array $rows): array
+{
+    $result = [];
+    foreach ($rows as $row) {
+        $result[] = normalizeNameSetRow($row);
+    }
+
+    // Start at index 2 to avoid header (0) and first data row (1) predecessor checks.
+    for ($i = 2, $count = count($result); $i < $count; $i++) {
+        $prevTops = trim($result[$i - 1][5]);
+        $currTops = trim($result[$i][5]);
+        if ($prevTops === '' || $currTops === '') {
+            continue;
+        }
+
+        if (preg_match('/^z-old-(.+)$/i', $prevTops, $matches) !== 1) {
+            continue;
+        }
+
+        $baseName = trim($matches[1]);
+        if ($baseName === '') {
+            continue;
+        }
+
+        if (strcasecmp($currTops, $baseName) === 0) {
+            $result[$i][7] = $result[$i - 1][7];
+        }
+    }
+
+    return $result;
+}
+
 try {
     $lookupRows = readCsvRows($lookupPath);
     $nameSetRows = readCsvRows($nameSetPath);
@@ -240,6 +280,8 @@ try {
                 }
             }
         }
+
+        $outputRows = applyFinalDescriptionPass($outputRows);
 
         $outputPath = rtrim($outputDir, DIRECTORY_SEPARATOR)
             . DIRECTORY_SEPARATOR
