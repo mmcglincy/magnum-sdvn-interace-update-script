@@ -61,7 +61,9 @@ function readCsvRows(string $path): array
  * Build round map: [roundLabel => [lineName => deviceName]].
  *
  * - round labels can be decimals (example: 2.5)
- * - rows without a specified move round are skipped
+ * - decimal commas are accepted (example: 2,5)
+ * - rows without a specified numeric move round are skipped
+ * - all specified move rounds are preserved even when mapping fields are empty
  *
  * @param array<int, array<int, string|null>> $lookupRows
  * @return array<string, array<string, string>>
@@ -71,35 +73,62 @@ function buildRoundMap(array $lookupRows): array
     $roundMap = [];
 
     foreach ($lookupRows as $row) {
+        // Column 9 (index 8): move round
+        if (!array_key_exists(8, $row)) {
+            continue;
+        }
+
+        $roundRaw = trim((string) $row[8]);
+        $roundLabel = normalizeRoundLabel($roundRaw);
+        if ($roundLabel === '') {
+            continue;
+        }
+
+        if (!isset($roundMap[$roundLabel])) {
+            // Keep every explicitly specified round from column 9.
+            $roundMap[$roundLabel] = [];
+        }
+
         // Column 3 (index 2): line name
         // Column 4 (index 3): device name
-        // Column 9 (index 8): move round
-        if (!array_key_exists(8, $row) || !array_key_exists(2, $row) || !array_key_exists(3, $row)) {
+        if (!array_key_exists(2, $row) || !array_key_exists(3, $row)) {
             continue;
         }
 
         $lineName = trim((string) $row[2]);
-        $deviceName = (string) $row[3];
-        $roundRaw = trim((string) $row[8]);
-
-        if ($lineName === '' || $roundRaw === '' || !is_numeric($roundRaw)) {
+        $deviceName = trim((string) $row[3]);
+        if ($lineName === '' || $deviceName === '') {
             continue;
-        }
-
-        $roundValue = (float) $roundRaw;
-        if ($roundValue < 2.0) {
-            continue;
-        }
-
-        if (!isset($roundMap[$roundRaw])) {
-            $roundMap[$roundRaw] = [];
         }
 
         // If duplicate line names exist in same round, later row wins.
-        $roundMap[$roundRaw][$lineName] = $deviceName;
+        $roundMap[$roundLabel][$lineName] = $deviceName;
     }
 
     return $roundMap;
+}
+
+/**
+ * Normalize numeric round labels for stable keys/filenames.
+ */
+function normalizeRoundLabel(string $roundRaw): string
+{
+    $value = trim($roundRaw);
+    if ($value === '') {
+        return '';
+    }
+
+    // Accept spreadsheet-style decimal commas.
+    $value = str_replace(',', '.', $value);
+    if (!is_numeric($value)) {
+        return '';
+    }
+
+    if (str_contains($value, '.')) {
+        $value = rtrim(rtrim($value, '0'), '.');
+    }
+
+    return $value === '-0' ? '0' : $value;
 }
 
 /**
@@ -275,54 +304,37 @@ function writeInterfaceOutputs(
 }
 
 /**
- * Recursively write one output file per round.
+ * Write one total file and per-interface files for each move round.
  *
- * @param array<int, array<int, string|null>> $targetRows
  * @param array<int, string> $roundLabels
+ * @param array<int, array<int, string|null>> $targetRows
  * @param array<string, array<string, string>> $roundMap
- * @param array<string, string> $effectiveMap
  * @param array<int, string> $interfaceNames
  */
-function processRoundsRecursively(
-    int $roundIndex,
+function processRounds(
     array $roundLabels,
     array $targetRows,
     array $roundMap,
-    array $effectiveMap,
     array $interfaceNames,
     string $outputDir,
     string $timestampPrefix,
     string $extension
 ): void {
-    if (!isset($roundLabels[$roundIndex])) {
-        return;
+    $effectiveMap = [];
+    foreach ($roundLabels as $roundLabel) {
+        foreach ($roundMap[$roundLabel] as $lineName => $deviceName) {
+            $effectiveMap[$lineName] = $deviceName;
+        }
+
+        $updatedRows = applyDeviceMap($targetRows, $effectiveMap);
+        $outputPath = rtrim($outputDir, DIRECTORY_SEPARATOR)
+            . DIRECTORY_SEPARATOR
+            . "{$timestampPrefix}-total-{$roundLabel}{$extension}";
+        writeCsvRows($outputPath, $updatedRows);
+
+        echo "Wrote: {$outputPath}\n";
+        writeInterfaceOutputs($updatedRows, $interfaceNames, $outputDir, $roundLabel, $timestampPrefix);
     }
-
-    $roundLabel = $roundLabels[$roundIndex];
-    foreach ($roundMap[$roundLabel] as $lineName => $deviceName) {
-        $effectiveMap[$lineName] = $deviceName;
-    }
-
-    $updatedRows = applyDeviceMap($targetRows, $effectiveMap);
-    $outputPath = rtrim($outputDir, DIRECTORY_SEPARATOR)
-        . DIRECTORY_SEPARATOR
-        . "{$timestampPrefix}-total-{$roundLabel}{$extension}";
-    writeCsvRows($outputPath, $updatedRows);
-
-    echo "Wrote: {$outputPath}\n";
-    writeInterfaceOutputs($updatedRows, $interfaceNames, $outputDir, $roundLabel, $timestampPrefix);
-
-    processRoundsRecursively(
-        $roundIndex + 1,
-        $roundLabels,
-        $targetRows,
-        $roundMap,
-        $effectiveMap,
-        $interfaceNames,
-        $outputDir,
-        $timestampPrefix,
-        $extension
-    );
 }
 
 try {
@@ -331,7 +343,7 @@ try {
     $roundMap = buildRoundMap($lookupRows);
 
     if ($roundMap === []) {
-        echo "No move rounds >= 2 found in lookup CSV. No output files created.\n";
+        echo "No numeric move rounds found in lookup CSV column 9. No output files created.\n";
         exit(0);
     }
 
@@ -340,12 +352,12 @@ try {
 
     $targetInfo = pathinfo($targetPath);
     $dir = $targetInfo['dirname'] ?? '.';
-    $extension = isset($targetInfo['extension']) ? '.' . $targetInfo['extension'] : '';
+    $extension = '.csv';
     $outputDir = $dir;
 
     $timestampPrefix = date('Y-m-d-H-i');
 
-    processRoundsRecursively(0, $roundLabels, $targetRows, $roundMap, [], $interfaceNames, $outputDir, $timestampPrefix, $extension);
+    processRounds($roundLabels, $targetRows, $roundMap, $interfaceNames, $outputDir, $timestampPrefix, $extension);
 } catch (Throwable $e) {
     fwrite(STDERR, "Error: " . $e->getMessage() . "\n");
     exit(1);
