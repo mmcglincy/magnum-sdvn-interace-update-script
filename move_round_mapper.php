@@ -322,7 +322,8 @@ function processRounds(
     string $extension
 ): void {
     $effectiveMap = [];
-    foreach ($roundLabels as $roundLabel) {
+    foreach ($roundLabels as $roundLabelRaw) {
+        $roundLabel = (string) $roundLabelRaw;
         foreach ($roundMap[$roundLabel] as $lineName => $deviceName) {
             $effectiveMap[$lineName] = $deviceName;
         }
