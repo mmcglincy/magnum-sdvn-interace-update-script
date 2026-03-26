@@ -12,6 +12,8 @@ declare(strict_types=1);
  *   Column 9 = move round
  *
  * target_csv:
+ *   Column 1 = interface_name
+ *   Column 4 = SRC/DST
  *   Column 6 = device name (replaced)
  *   Column 7 = line name (match key)
  */
@@ -126,7 +128,52 @@ function getSortedRoundLabels(array $roundMap): array
 }
 
 /**
+ * Build unique interface_name list from target CSV column 1.
+ *
+ * @param array<int, array<int, string|null>> $targetRows
+ * @return array<int, string>
+ */
+function getUniqueInterfaceNames(array $targetRows): array
+{
+    $seen = [];
+    $interfaceNames = [];
+
+    foreach ($targetRows as $row) {
+        if (!array_key_exists(0, $row)) {
+            continue;
+        }
+
+        $interfaceName = trim((string) $row[0]);
+        if ($interfaceName === '' || isset($seen[$interfaceName])) {
+            continue;
+        }
+
+        $seen[$interfaceName] = true;
+        $interfaceNames[] = $interfaceName;
+    }
+
+    return $interfaceNames;
+}
+
+/**
+ * Convert interface names to safe filename parts.
+ */
+function sanitizeFilenamePart(string $value): string
+{
+    $sanitized = preg_replace('/[^A-Za-z0-9._-]+/', '_', trim($value));
+    if ($sanitized === null || $sanitized === '') {
+        return 'unknown';
+    }
+
+    return $sanitized;
+}
+
+/**
  * Apply replacements from a prepared line->device map.
+ *
+ * Rules:
+ * - If a target row line-name matches an active move-round mapping and device is ITXR, remove the row.
+ * - Only replace when a target row line-name matches, column 4 is SRC, and existing device is ITXE.
  *
  * @param array<int, array<int, string|null>> $targetRows
  * @param array<string, string> $effectiveMap
@@ -147,7 +194,21 @@ function applyDeviceMap(array $targetRows, array $effectiveMap): array
         }
 
         $lineName = trim((string) $row[6]);
-        if ($lineName !== '' && array_key_exists($lineName, $effectiveMap)) {
+        if ($lineName === '' || !array_key_exists($lineName, $effectiveMap)) {
+            $resultRows[] = $row;
+            continue;
+        }
+
+        $deviceName = trim((string) $row[5]);
+        if (stripos($deviceName, 'ITXR') !== false) {
+            // Matched row already points to ITXR, remove the row.
+            continue;
+        }
+
+        $srcDst = trim((string) ($row[3] ?? ''));
+        $isSrc = strcasecmp($srcDst, 'SRC') === 0;
+        $isItxe = stripos($deviceName, 'ITXE') !== false;
+        if ($isSrc && $isItxe) {
             $row[5] = $effectiveMap[$lineName];
         }
 
@@ -177,12 +238,43 @@ function writeCsvRows(string $path, array $rows): void
 }
 
 /**
+ * Write per-interface output files for a given round.
+ *
+ * @param array<int, array<int, string|null>> $rows
+ * @param array<int, string> $interfaceNames
+ */
+function writeInterfaceOutputs(
+    array $rows,
+    array $interfaceNames,
+    string $outputBasePath,
+    string $roundLabel,
+    string $dateStamp,
+    string $extension
+): void {
+    foreach ($interfaceNames as $interfaceName) {
+        $filteredRows = [];
+        foreach ($rows as $row) {
+            $rowInterfaceName = trim((string) ($row[0] ?? ''));
+            if ($rowInterfaceName === $interfaceName) {
+                $filteredRows[] = $row;
+            }
+        }
+
+        $interfaceFilePart = sanitizeFilenamePart($interfaceName);
+        $interfacePath = "{$outputBasePath}-{$interfaceFilePart}-{$roundLabel}-{$dateStamp}{$extension}";
+        writeCsvRows($interfacePath, $filteredRows);
+        echo "Wrote: {$interfacePath}\n";
+    }
+}
+
+/**
  * Recursively write one output file per round.
  *
  * @param array<int, array<int, string|null>> $targetRows
  * @param array<int, string> $roundLabels
  * @param array<string, array<string, string>> $roundMap
  * @param array<string, string> $effectiveMap
+ * @param array<int, string> $interfaceNames
  */
 function processRoundsRecursively(
     int $roundIndex,
@@ -190,6 +282,7 @@ function processRoundsRecursively(
     array $targetRows,
     array $roundMap,
     array $effectiveMap,
+    array $interfaceNames,
     string $outputBasePath,
     string $dateStamp,
     string $extension
@@ -204,10 +297,10 @@ function processRoundsRecursively(
     }
 
     $updatedRows = applyDeviceMap($targetRows, $effectiveMap);
-    $outputPath = "{$outputBasePath}-{$roundLabel}-{$dateStamp}{$extension}";
+    $outputPath = "{$outputBasePath}-total-{$roundLabel}-{$dateStamp}{$extension}";
     writeCsvRows($outputPath, $updatedRows);
-
     echo "Wrote: {$outputPath}\n";
+    writeInterfaceOutputs($updatedRows, $interfaceNames, $outputBasePath, $roundLabel, $dateStamp, $extension);
 
     processRoundsRecursively(
         $roundIndex + 1,
@@ -215,6 +308,7 @@ function processRoundsRecursively(
         $targetRows,
         $roundMap,
         $effectiveMap,
+        $interfaceNames,
         $outputBasePath,
         $dateStamp,
         $extension
@@ -232,16 +326,16 @@ try {
     }
 
     $roundLabels = getSortedRoundLabels($roundMap);
+    $interfaceNames = getUniqueInterfaceNames($targetRows);
 
     $targetInfo = pathinfo($targetPath);
     $dir = $targetInfo['dirname'] ?? '.';
-    $filename = $targetInfo['filename'] ?? 'output';
-    $extension = isset($targetInfo['extension']) ? '.' . $targetInfo['extension'] : '';
-    $outputBasePath = rtrim($dir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $filename;
+    $outputBasePath = rtrim($dir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'example';
+    $extension = '.csv';
 
     $dateStamp = date('Y-m-d');
 
-    processRoundsRecursively(0, $roundLabels, $targetRows, $roundMap, [], $outputBasePath, $dateStamp, $extension);
+    processRoundsRecursively(0, $roundLabels, $targetRows, $roundMap, [], $interfaceNames, $outputBasePath, $dateStamp, $extension);
 } catch (Throwable $e) {
     fwrite(STDERR, "Error: " . $e->getMessage() . "\n");
     exit(1);
