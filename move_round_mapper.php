@@ -144,7 +144,11 @@ function getUniqueInterfaceNames(array $targetRows): array
         }
 
         $interfaceName = trim((string) $row[0]);
-        if ($interfaceName === '' || isset($seen[$interfaceName])) {
+        if (
+            $interfaceName === '' ||
+            strcasecmp($interfaceName, 'interface_name') === 0 ||
+            isset($seen[$interfaceName])
+        ) {
             continue;
         }
 
@@ -243,14 +247,8 @@ function writeCsvRows(string $path, array $rows): void
  * @param array<int, array<int, string|null>> $rows
  * @param array<int, string> $interfaceNames
  */
-function writeInterfaceOutputs(
-    array $rows,
-    array $interfaceNames,
-    string $outputBasePath,
-    string $roundLabel,
-    string $dateStamp,
-    string $extension
-): void {
+function writeInterfaceOutputs(array $rows, array $interfaceNames, string $outputDir, string $roundLabel, string $dateStamp): void
+{
     foreach ($interfaceNames as $interfaceName) {
         $filteredRows = [];
         foreach ($rows as $row) {
@@ -261,58 +259,45 @@ function writeInterfaceOutputs(
         }
 
         $interfaceFilePart = sanitizeFilenamePart($interfaceName);
-        $interfacePath = "{$outputBasePath}-{$interfaceFilePart}-{$roundLabel}-{$dateStamp}{$extension}";
+        $interfacePath = rtrim($outputDir, DIRECTORY_SEPARATOR)
+            . DIRECTORY_SEPARATOR
+            . "{$dateStamp}-{$interfaceFilePart}-{$roundLabel}.csv";
         writeCsvRows($interfacePath, $filteredRows);
         echo "Wrote: {$interfacePath}\n";
     }
 }
 
 /**
- * Recursively write one output file per round.
+ * Write outputs for each move round.
  *
  * @param array<int, array<int, string|null>> $targetRows
  * @param array<int, string> $roundLabels
  * @param array<string, array<string, string>> $roundMap
- * @param array<string, string> $effectiveMap
  * @param array<int, string> $interfaceNames
  */
-function processRoundsRecursively(
-    int $roundIndex,
+function processRounds(
     array $roundLabels,
     array $targetRows,
     array $roundMap,
-    array $effectiveMap,
     array $interfaceNames,
-    string $outputBasePath,
-    string $dateStamp,
-    string $extension
+    string $outputDir,
+    string $dateStamp
 ): void {
-    if (!isset($roundLabels[$roundIndex])) {
-        return;
+    $effectiveMap = [];
+    foreach ($roundLabels as $roundLabel) {
+        foreach ($roundMap[$roundLabel] as $lineName => $deviceName) {
+            $effectiveMap[$lineName] = $deviceName;
+        }
+
+        $updatedRows = applyDeviceMap($targetRows, $effectiveMap);
+        $outputPath = rtrim($outputDir, DIRECTORY_SEPARATOR)
+            . DIRECTORY_SEPARATOR
+            . "{$dateStamp}-total-{$roundLabel}.csv";
+        writeCsvRows($outputPath, $updatedRows);
+        echo "Wrote: {$outputPath}\n";
+
+        writeInterfaceOutputs($updatedRows, $interfaceNames, $outputDir, $roundLabel, $dateStamp);
     }
-
-    $roundLabel = $roundLabels[$roundIndex];
-    foreach ($roundMap[$roundLabel] as $lineName => $deviceName) {
-        $effectiveMap[$lineName] = $deviceName;
-    }
-
-    $updatedRows = applyDeviceMap($targetRows, $effectiveMap);
-    $outputPath = "{$outputBasePath}-total-{$roundLabel}-{$dateStamp}{$extension}";
-    writeCsvRows($outputPath, $updatedRows);
-    echo "Wrote: {$outputPath}\n";
-    writeInterfaceOutputs($updatedRows, $interfaceNames, $outputBasePath, $roundLabel, $dateStamp, $extension);
-
-    processRoundsRecursively(
-        $roundIndex + 1,
-        $roundLabels,
-        $targetRows,
-        $roundMap,
-        $effectiveMap,
-        $interfaceNames,
-        $outputBasePath,
-        $dateStamp,
-        $extension
-    );
 }
 
 try {
@@ -330,12 +315,11 @@ try {
 
     $targetInfo = pathinfo($targetPath);
     $dir = $targetInfo['dirname'] ?? '.';
-    $outputBasePath = rtrim($dir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'example';
-    $extension = '.csv';
+    $outputDir = $dir;
 
     $dateStamp = date('Y-m-d');
 
-    processRoundsRecursively(0, $roundLabels, $targetRows, $roundMap, [], $interfaceNames, $outputBasePath, $dateStamp, $extension);
+    processRounds($roundLabels, $targetRows, $roundMap, $interfaceNames, $outputDir, $dateStamp);
 } catch (Throwable $e) {
     fwrite(STDERR, "Error: " . $e->getMessage() . "\n");
     exit(1);
