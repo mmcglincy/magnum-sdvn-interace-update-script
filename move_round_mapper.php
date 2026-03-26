@@ -61,7 +61,9 @@ function readCsvRows(string $path): array
  * Build round map: [roundLabel => [lineName => deviceName]].
  *
  * - round labels can be decimals (example: 2.5)
+ * - decimal commas are accepted (example: 2,5)
  * - rows without a specified move round are skipped
+ * - all specified move rounds are preserved, even when no valid mapping rows exist
  *
  * @param array<int, array<int, string|null>> $lookupRows
  * @return array<string, array<string, string>>
@@ -71,35 +73,63 @@ function buildRoundMap(array $lookupRows): array
     $roundMap = [];
 
     foreach ($lookupRows as $row) {
+        // Column 9 (index 8): move round
+        if (!array_key_exists(8, $row)) {
+            continue;
+        }
+
+        $roundRaw = trim((string) $row[8]);
+        $roundLabel = normalizeRoundLabel($roundRaw);
+        if ($roundLabel === '') {
+            continue;
+        }
+
+        if (!isset($roundMap[$roundLabel])) {
+            // Keep every explicitly specified round from column 9.
+            $roundMap[$roundLabel] = [];
+        }
+
         // Column 3 (index 2): line name
         // Column 4 (index 3): device name
-        // Column 9 (index 8): move round
-        if (!array_key_exists(8, $row) || !array_key_exists(2, $row) || !array_key_exists(3, $row)) {
+        if (!array_key_exists(2, $row) || !array_key_exists(3, $row)) {
             continue;
         }
 
         $lineName = trim((string) $row[2]);
-        $deviceName = (string) $row[3];
-        $roundRaw = trim((string) $row[8]);
-
-        if ($lineName === '' || $roundRaw === '' || !is_numeric($roundRaw)) {
+        $deviceName = trim((string) $row[3]);
+        if ($lineName === '' || $deviceName === '') {
             continue;
-        }
-
-        $roundValue = (float) $roundRaw;
-        if ($roundValue < 2.0) {
-            continue;
-        }
-
-        if (!isset($roundMap[$roundRaw])) {
-            $roundMap[$roundRaw] = [];
         }
 
         // If duplicate line names exist in same round, later row wins.
-        $roundMap[$roundRaw][$lineName] = $deviceName;
+        $roundMap[$roundLabel][$lineName] = $deviceName;
     }
 
     return $roundMap;
+}
+
+/**
+ * Normalize a numeric round label for stable keys/file names.
+ * Accepts decimal commas by converting ',' to '.'.
+ */
+function normalizeRoundLabel(string $roundRaw): string
+{
+    $value = trim($roundRaw);
+    if ($value === '') {
+        return '';
+    }
+
+    // Accept comma decimals from spreadsheets (e.g. 2,5).
+    $value = str_replace(',', '.', $value);
+    if (!is_numeric($value)) {
+        return '';
+    }
+
+    if (str_contains($value, '.')) {
+        $value = rtrim(rtrim($value, '0'), '.');
+    }
+
+    return $value === '-0' ? '0' : $value;
 }
 
 /**
@@ -306,7 +336,7 @@ try {
     $roundMap = buildRoundMap($lookupRows);
 
     if ($roundMap === []) {
-        echo "No move rounds >= 2 found in lookup CSV. No output files created.\n";
+        echo "No numeric move rounds found in lookup CSV column 9. No output files created.\n";
         exit(0);
     }
 
