@@ -49,7 +49,7 @@ function readCsvRows(string $path): array
         throw new RuntimeException("Unable to open CSV: {$path}");
     }
 
-    while (($row = fgetcsv($handle)) !== false) {
+    while (($row = fgetcsv($handle, 0, ',', '"', '\\')) !== false) {
         $rows[] = $row;
     }
 
