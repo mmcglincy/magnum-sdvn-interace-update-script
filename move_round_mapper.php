@@ -296,6 +296,8 @@ function writeCsvRows(string $path, array $rows): void
     }
 
     foreach ($rows as $row) {
+        // Output only columns 1 through 6.
+        $row = array_slice($row, 0, 6);
         // Explicitly pass $escape to avoid PHP 8.4+ deprecation warnings.
         fputcsv($handle, $row, ',', '"', '\\');
     }
