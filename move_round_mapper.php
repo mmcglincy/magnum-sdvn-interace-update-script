@@ -264,7 +264,8 @@ function writeCsvRows(string $path, array $rows): void
     }
 
     foreach ($rows as $row) {
-        fputcsv($handle, $row);
+        // Explicitly pass $escape to avoid PHP 8.4+ deprecation warnings.
+        fputcsv($handle, $row, ',', '"', '\\');
     }
 
     fclose($handle);
