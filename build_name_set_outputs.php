@@ -187,6 +187,8 @@ function normalizeNameSetRow(array $row): array
  * Final pass before write:
  * - If previous TOPS is z-old-<name> and current TOPS is <name>,
  *   copy Description from previous row into current row.
+ * - Also copy Description when current TOPS starts with "T" and still
+ *   matches the same <name>.
  *
  * @param array<int, array<int, string|null>> $rows
  * @return array<int, array<int, string>>
@@ -215,7 +217,11 @@ function applyFinalDescriptionPass(array $rows): array
             continue;
         }
 
-        if (strcasecmp($currTops, $baseName) === 0) {
+        $currMatchesExactName = strcasecmp($currTops, $baseName) === 0;
+        $currStartsWithT = str_starts_with(strtoupper($currTops), 'T');
+        $currContainsName = stripos($currTops, $baseName) !== false;
+
+        if ($currMatchesExactName || ($currStartsWithT && $currContainsName)) {
             $result[$i][7] = $result[$i - 1][7];
         }
     }
