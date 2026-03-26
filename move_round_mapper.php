@@ -167,7 +167,12 @@ function getUniqueInterfaceNames(array $targetRows): array
     $seen = [];
     $interfaceNames = [];
 
-    foreach ($targetRows as $row) {
+    foreach ($targetRows as $rowIndex => $row) {
+        // Do not use the first row when collecting interface_name values.
+        if ($rowIndex === 0) {
+            continue;
+        }
+
         if (!array_key_exists(0, $row)) {
             continue;
         }
@@ -175,7 +180,6 @@ function getUniqueInterfaceNames(array $targetRows): array
         $interfaceName = trim((string) $row[0]);
         if (
             $interfaceName === '' ||
-            strcasecmp($interfaceName, 'interface_name') === 0 ||
             isset($seen[$interfaceName])
         ) {
             continue;
