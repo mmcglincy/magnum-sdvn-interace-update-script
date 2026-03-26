@@ -58,7 +58,7 @@ function readCsvRows(string $path): array
 }
 
 /**
- * Build round map: [roundLabel => [lineName => deviceName]].
+ * Build round map keyed by stable internal round keys.
  *
  * - round labels can be decimals (example: 2.5)
  * - decimal commas are accepted (example: 2,5)
@@ -66,7 +66,7 @@ function readCsvRows(string $path): array
  * - all specified move rounds are preserved even when mapping fields are empty
  *
  * @param array<int, array<int, string|null>> $lookupRows
- * @return array<string, array<string, string>>
+ * @return array<string, array{roundLabel: string, lineToDevice: array<string, string>}>
  */
 function buildRoundMap(array $lookupRows): array
 {
@@ -84,9 +84,13 @@ function buildRoundMap(array $lookupRows): array
             continue;
         }
 
-        if (!isset($roundMap[$roundLabel])) {
+        $roundKey = makeRoundKey($roundLabel);
+        if (!isset($roundMap[$roundKey])) {
             // Keep every explicitly specified round from column 9.
-            $roundMap[$roundLabel] = [];
+            $roundMap[$roundKey] = [
+                'roundLabel' => $roundLabel,
+                'lineToDevice' => [],
+            ];
         }
 
         // Column 3 (index 2): line name
@@ -102,14 +106,16 @@ function buildRoundMap(array $lookupRows): array
         }
 
         // If duplicate line names exist in same round, later row wins.
-        $roundMap[$roundLabel][$lineName] = $deviceName;
+        $roundMap[$roundKey]['lineToDevice'][$lineName] = $deviceName;
     }
 
     return $roundMap;
 }
 
 /**
- * Normalize numeric round labels for stable keys/filenames.
+ * Normalize numeric round labels for filenames/sorting.
+ *
+ * Note: preserves original decimal precision (e.g. 2.0 stays 2.0).
  */
 function normalizeRoundLabel(string $roundRaw): string
 {
@@ -118,42 +124,64 @@ function normalizeRoundLabel(string $roundRaw): string
         return '';
     }
 
+    // Handle UTF-8 BOM that can appear in CSV exports.
+    $value = preg_replace('/^\xEF\xBB\xBF/u', '', $value) ?? $value;
+
     // Accept spreadsheet-style decimal commas.
     $value = str_replace(',', '.', $value);
     if (!is_numeric($value)) {
         return '';
     }
 
-    if (str_contains($value, '.')) {
-        $value = rtrim(rtrim($value, '0'), '.');
+    // Remove a leading plus sign while preserving the original precision.
+    if (str_starts_with($value, '+')) {
+        $value = substr($value, 1);
     }
 
     return $value === '-0' ? '0' : $value;
 }
 
 /**
- * Get round labels sorted by numeric value (ascending).
+ * Build an internal key from a normalized round label.
+ */
+function makeRoundKey(string $roundLabel): string
+{
+    return 'round::' . $roundLabel;
+}
+
+/**
+ * Extract normalized round label from internal key.
+ */
+function roundLabelFromKey(string $roundKey): string
+{
+    return str_starts_with($roundKey, 'round::') ? substr($roundKey, 7) : $roundKey;
+}
+
+/**
+ * Get round keys sorted by numeric round label (ascending).
  *
- * @param array<string, array<string, string>> $roundMap
+ * @param array<string, array{roundLabel: string, lineToDevice: array<string, string>}> $roundMap
  * @return array<int, string>
  */
-function getSortedRoundLabels(array $roundMap): array
+function getSortedRoundKeys(array $roundMap): array
 {
-    $roundLabels = array_keys($roundMap);
+    $roundKeys = array_keys($roundMap);
     usort(
-        $roundLabels,
+        $roundKeys,
         static function (string $a, string $b): int {
-            $valueCompare = (float) $a <=> (float) $b;
+            $labelA = roundLabelFromKey($a);
+            $labelB = roundLabelFromKey($b);
+            $valueCompare = (float) $labelA <=> (float) $labelB;
             if ($valueCompare !== 0) {
                 return $valueCompare;
             }
 
             // Deterministic tie-breaker if numeric values are equal.
-            return strcmp($a, $b);
+            return strcmp($labelA, $labelB);
         }
     );
 
-    return $roundLabels;
+    return $roundKeys;
 }
 
 /**
@@ -311,13 +339,13 @@ function writeInterfaceOutputs(
 /**
  * Write one total file and per-interface files for each move round.
  *
- * @param array<int, string> $roundLabels
+ * @param array<int, string> $roundKeys
  * @param array<int, array<int, string|null>> $targetRows
- * @param array<string, array<string, string>> $roundMap
+ * @param array<string, array{roundLabel: string, lineToDevice: array<string, string>}> $roundMap
  * @param array<int, string> $interfaceNames
  */
 function processRounds(
-    array $roundLabels,
+    array $roundKeys,
     array $targetRows,
     array $roundMap,
     array $interfaceNames,
@@ -326,9 +354,14 @@ function processRounds(
     string $extension
 ): void {
     $effectiveMap = [];
-    foreach ($roundLabels as $roundLabelRaw) {
-        $roundLabel = (string) $roundLabelRaw;
-        foreach ($roundMap[$roundLabel] as $lineName => $deviceName) {
+    foreach ($roundKeys as $roundKeyRaw) {
+        $roundKey = (string) $roundKeyRaw;
+        if (!isset($roundMap[$roundKey])) {
+            continue;
+        }
+
+        $roundLabel = $roundMap[$roundKey]['roundLabel'];
+        foreach ($roundMap[$roundKey]['lineToDevice'] as $lineName => $deviceName) {
             $effectiveMap[$lineName] = $deviceName;
         }
 
@@ -353,7 +386,7 @@ try {
         exit(0);
     }
 
-    $roundLabels = getSortedRoundLabels($roundMap);
+    $roundKeys = getSortedRoundKeys($roundMap);
     $interfaceNames = getUniqueInterfaceNames($targetRows);
 
     $targetInfo = pathinfo($targetPath);
@@ -363,7 +396,7 @@ try {
 
     $timestampPrefix = date('Y-m-d-H-i');
 
-    processRounds($roundLabels, $targetRows, $roundMap, $interfaceNames, $outputDir, $timestampPrefix, $extension);
+    processRounds($roundKeys, $targetRows, $roundMap, $interfaceNames, $outputDir, $timestampPrefix, $extension);
 } catch (Throwable $e) {
     fwrite(STDERR, "Error: " . $e->getMessage() . "\n");
     exit(1);
