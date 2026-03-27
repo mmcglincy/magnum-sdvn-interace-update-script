@@ -469,7 +469,6 @@ try {
     $unmappedInterfaceRows = 0;
     $emptyOrderRows = 0;
     $orderMismatchRows = 0;
-    $fallbackMatchRows = 0;
     $noTopsRows = 0;
     $rowDebugLimit = 100;
     $rowDebugCount = 0;
@@ -524,19 +523,6 @@ try {
             }
         }
 
-        // Final fallback: match directly by order number to Edge tables.
-        if ($topsName === '' && $orderKey !== '') {
-            $fallback = $topsBySrcNumber[$orderKey] ?? ($topsByDstNumber[$orderKey] ?? '');
-            if ($fallback !== '') {
-                $topsName = $fallback;
-                $fallbackMatchRows++;
-                if ($rowDebugCount < $rowDebugLimit) {
-                    debugEcho("Row {$rowIndex}: fallback matched order {$orderKey} to TOPS '{$topsName}'");
-                    $rowDebugCount++;
-                }
-            }
-        }
-
         if ($topsName === '') {
             $noTopsRows++;
             if ($rowDebugCount < $rowDebugLimit) {
@@ -555,7 +541,6 @@ try {
     }
     debugEcho("Processed interface rows={$totalRows}");
     debugEcho("Matched TOPS rows={$matchedRows}");
-    debugEcho("Fallback matched rows={$fallbackMatchRows}");
     debugEcho("No TOPS rows={$noTopsRows}");
     debugEcho("Unmapped interface rows={$unmappedInterfaceRows}");
     debugEcho("Empty/non-numeric Order rows={$emptyOrderRows}");
