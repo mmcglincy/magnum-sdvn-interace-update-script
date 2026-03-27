@@ -463,12 +463,16 @@ try {
     }
 
     $interfaceHeader = $interfaceRows[0];
-    $interfaceNameCol = findHeaderIndex($interfaceHeader, ['Interface Name']);
-    $srcDstCol = findHeaderIndex($interfaceHeader, ['SRC/DST']);
-    $orderCol = findHeaderIndex($interfaceHeader, ['Order']);
-    if ($interfaceNameCol < 0 || $srcDstCol < 0 || $orderCol < 0) {
-        throw new RuntimeException('Required columns not found in interface file.');
+    if (count($interfaceHeader) < 5) {
+        throw new RuntimeException('Interface file must contain at least 5 columns.');
     }
+
+    // Use fixed column positions from the interface file specification:
+    // 1) Interface Name, 4) SRC/DST, 5) Order.
+    $interfaceNameCol = 0;
+    $srcDstCol = 3;
+    $orderCol = 4;
+    debugEcho('Using fixed interface columns: Interface Name=1, SRC/DST=4, Order=5');
 
     $interfaceMap = interfaceNumberMap();
 
