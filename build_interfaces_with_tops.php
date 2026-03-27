@@ -529,8 +529,6 @@ try {
     $orderCol = 4;
     debugEcho('Using fixed interface columns: Interface Name=1, SRC/DST=4, Order=5');
 
-    $interfaceMap = interfaceNumberMap();
-
     $outputRows = [];
     $headerOut = $interfaceHeader;
     $headerOut[] = 'TOPS Name';
