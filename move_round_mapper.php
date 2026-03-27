@@ -233,6 +233,11 @@ function sanitizeFilenamePart(string $value): string
     return $sanitized;
 }
 
+function debugEcho(string $message): void
+{
+    echo "[DEBUG] {$message}\n";
+}
+
 /**
  * Apply replacements from a prepared line->device map.
  *
@@ -254,31 +259,66 @@ function rowHasItxrInTopsColumn7(array $row): bool
 }
 
 /**
+ * Resolve the effective line-name key for a target row.
+ * First tries exact column-7 match, then partial match against active keys.
+ *
+ * @param array<string, string> $effectiveMap
+ */
+function resolveEffectiveLineKey(string $column7Value, array $effectiveMap): string
+{
+    if ($column7Value === '') {
+        return '';
+    }
+
+    if (array_key_exists($column7Value, $effectiveMap)) {
+        return $column7Value;
+    }
+
+    foreach ($effectiveMap as $lineName => $_device) {
+        if ($lineName !== '' && stripos($column7Value, $lineName) !== false) {
+            return $lineName;
+        }
+    }
+
+    return '';
+}
+
+/**
  * Apply replacements and row filtering for one round snapshot.
  *
  * @param array<int, array<int, string|null>> $targetRows
  * @param array<string, string> $effectiveMap
  * @return array<int, array<int, string|null>>
  */
-function applyDeviceMap(array $targetRows, array $effectiveMap): array
+function applyDeviceMap(array $targetRows, array $effectiveMap, string $roundLabel): array
 {
     $resultRows = [];
+    $totalRows = 0;
+    $scopedRows = 0;
+    $itxrRemovedRows = 0;
+    $replacedRows = 0;
+
     foreach ($targetRows as $row) {
+        $totalRows++;
+
         // Needs at least 7 columns to read line name and replace device name.
         if (!array_key_exists(6, $row) || !array_key_exists(5, $row)) {
             $resultRows[] = $row;
             continue;
         }
 
-        $lineName = trim((string) $row[6]);
-        if ($lineName === '' || !array_key_exists($lineName, $effectiveMap)) {
+        $column7Value = trim((string) $row[6]);
+        $resolvedLineKey = resolveEffectiveLineKey($column7Value, $effectiveMap);
+        if ($resolvedLineKey === '') {
             $resultRows[] = $row;
             continue;
         }
+        $scopedRows++;
 
         // Row is part of current cumulative move-round scope.
         // If its TOPS Name (column 7) partially matches ITXR, exclude it.
         if (rowHasItxrInTopsColumn7($row)) {
+            $itxrRemovedRows++;
             continue;
         }
 
@@ -288,11 +328,17 @@ function applyDeviceMap(array $targetRows, array $effectiveMap): array
         $isSrc = strcasecmp($srcDst, 'SRC') === 0;
         $isItxe = stripos($deviceName, 'ITXE') !== false;
         if ($isSrc && $isItxe) {
-            $row[5] = $effectiveMap[$lineName];
+            $row[5] = $effectiveMap[$resolvedLineKey];
+            $replacedRows++;
         }
 
         $resultRows[] = $row;
     }
+
+    debugEcho(
+        "Round {$roundLabel}: total_rows={$totalRows}, scoped_rows={$scopedRows}, "
+        . "itxr_removed={$itxrRemovedRows}, replaced={$replacedRows}, output_rows=" . count($resultRows)
+    );
 
     return $resultRows;
 }
@@ -381,7 +427,7 @@ function processRounds(
             $effectiveMap[$lineName] = $deviceName;
         }
 
-        $updatedRows = applyDeviceMap($targetRows, $effectiveMap);
+        $updatedRows = applyDeviceMap($targetRows, $effectiveMap, $roundLabel);
         $outputPath = rtrim($outputDir, DIRECTORY_SEPARATOR)
             . DIRECTORY_SEPARATOR
             . "{$timestampPrefix}-total-{$roundLabel}{$extension}";
