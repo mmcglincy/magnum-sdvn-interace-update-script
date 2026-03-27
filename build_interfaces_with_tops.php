@@ -79,6 +79,7 @@ function interfaceNumberMap(): array
 function normalizeInterfaceName(string $name): string
 {
     $name = trim($name);
+    $name = preg_replace('/[^a-z0-9]+/i', ' ', $name) ?? $name;
     $name = preg_replace('/\s+/', ' ', $name) ?? $name;
     return strtolower($name);
 }
@@ -98,7 +99,11 @@ function normalizeNumberKey(string $value): string
     }
 
     $value = preg_replace('/^\xEF\xBB\xBF/u', '', $value) ?? $value;
-    $value = str_replace(',', '.', $value);
+    if (preg_match('/[-+]?\d+(?:[.,]\d+)?/', $value, $matches) !== 1) {
+        return '';
+    }
+
+    $value = str_replace(',', '.', $matches[0]);
     if (!is_numeric($value)) {
         return '';
     }
@@ -112,6 +117,11 @@ function normalizeNumberKey(string $value): string
     }
 
     return $value === '-0' ? '0' : $value;
+}
+
+function debugEcho(string $message): void
+{
+    echo "[DEBUG] {$message}\n";
 }
 
 /**
@@ -402,6 +412,9 @@ try {
     $srcCol = $edgeHeaderInfo['srcCol'];
     $dstCol = $edgeHeaderInfo['dstCol'];
     $edgeHeaderRowIndex = $edgeHeaderInfo['headerRowIndex'];
+    debugEcho(
+        "Edge header row={$edgeHeaderRowIndex}, topsCol={$topsCol}, srcCol={$srcCol}, dstCol={$dstCol}"
+    );
 
     $topsBySrcNumber = [];
     $topsByDstNumber = [];
@@ -424,6 +437,12 @@ try {
             $topsByDstNumber[$dstKey] = $tops;
         }
     }
+    debugEcho('TOPS by SRC count=' . count($topsBySrcNumber));
+    debugEcho('TOPS by DST count=' . count($topsByDstNumber));
+    $sampleSrc = array_slice(array_keys($topsBySrcNumber), 0, 5);
+    $sampleDst = array_slice(array_keys($topsByDstNumber), 0, 5);
+    debugEcho('Sample SRC keys: ' . implode(', ', $sampleSrc));
+    debugEcho('Sample DST keys: ' . implode(', ', $sampleDst));
 
     $interfaceRows = readDelimitedRows($interfacePath);
     if ($interfaceRows === []) {
@@ -445,10 +464,21 @@ try {
     $headerOut[] = 'TOPS Name';
     $outputRows[] = $headerOut;
 
+    $totalRows = 0;
+    $matchedRows = 0;
+    $unmappedInterfaceRows = 0;
+    $emptyOrderRows = 0;
+    $orderMismatchRows = 0;
+    $fallbackMatchRows = 0;
+    $noTopsRows = 0;
+    $rowDebugLimit = 100;
+    $rowDebugCount = 0;
+
     foreach ($interfaceRows as $rowIndex => $row) {
         if ($rowIndex === 0) {
             continue;
         }
+        $totalRows++;
 
         $interfaceName = trim((string) ($row[$interfaceNameCol] ?? ''));
         $srcDst = strtoupper(trim((string) ($row[$srcDstCol] ?? '')));
@@ -456,24 +486,80 @@ try {
 
         $topsName = '';
         $interfaceKey = normalizeInterfaceName($interfaceName);
-        if (isset($interfaceMap[$interfaceKey]) && $orderKey !== '') {
-            $expected = $srcDst === 'SRC'
-                ? $interfaceMap[$interfaceKey]['source']
-                : $interfaceMap[$interfaceKey]['destination'];
+        if (!isset($interfaceMap[$interfaceKey])) {
+            $unmappedInterfaceRows++;
+            if ($rowDebugCount < $rowDebugLimit) {
+                debugEcho("Row {$rowIndex}: interface not mapped: '{$interfaceName}'");
+                $rowDebugCount++;
+            }
+        } elseif ($orderKey === '') {
+            $emptyOrderRows++;
+            if ($rowDebugCount < $rowDebugLimit) {
+                debugEcho("Row {$rowIndex}: empty/non-numeric Order for '{$interfaceName}'");
+                $rowDebugCount++;
+            }
+        } else {
+            $sourceExpected = $interfaceMap[$interfaceKey]['source'];
+            $destinationExpected = $interfaceMap[$interfaceKey]['destination'];
 
-            if ($orderKey === $expected) {
-                if ($srcDst === 'SRC') {
-                    $topsName = $topsBySrcNumber[$orderKey] ?? '';
-                } elseif ($srcDst === 'DST') {
-                    $topsName = $topsByDstNumber[$orderKey] ?? '';
+            if ($srcDst === 'SRC') {
+                if ($orderKey === $sourceExpected) {
+                    $topsName = $topsBySrcNumber[$orderKey] ?? ($topsByDstNumber[$orderKey] ?? '');
+                } else {
+                    $orderMismatchRows++;
+                }
+            } elseif ($srcDst === 'DST') {
+                // Support either destination_number or source_number for DST rows.
+                if ($orderKey === $destinationExpected || $orderKey === $sourceExpected) {
+                    $topsName = $topsByDstNumber[$orderKey] ?? ($topsBySrcNumber[$orderKey] ?? '');
+                } else {
+                    $orderMismatchRows++;
+                }
+            } else {
+                if ($orderKey === $sourceExpected || $orderKey === $destinationExpected) {
+                    $topsName = $topsBySrcNumber[$orderKey] ?? ($topsByDstNumber[$orderKey] ?? '');
+                } else {
+                    $orderMismatchRows++;
                 }
             }
+        }
+
+        // Final fallback: match directly by order number to Edge tables.
+        if ($topsName === '' && $orderKey !== '') {
+            $fallback = $topsBySrcNumber[$orderKey] ?? ($topsByDstNumber[$orderKey] ?? '');
+            if ($fallback !== '') {
+                $topsName = $fallback;
+                $fallbackMatchRows++;
+                if ($rowDebugCount < $rowDebugLimit) {
+                    debugEcho("Row {$rowIndex}: fallback matched order {$orderKey} to TOPS '{$topsName}'");
+                    $rowDebugCount++;
+                }
+            }
+        }
+
+        if ($topsName === '') {
+            $noTopsRows++;
+            if ($rowDebugCount < $rowDebugLimit) {
+                debugEcho(
+                    "Row {$rowIndex}: no TOPS match (Interface='{$interfaceName}', SRC/DST='{$srcDst}', Order='{$orderKey}')"
+                );
+                $rowDebugCount++;
+            }
+        } else {
+            $matchedRows++;
         }
 
         $rowOut = $row;
         $rowOut[] = $topsName;
         $outputRows[] = $rowOut;
     }
+    debugEcho("Processed interface rows={$totalRows}");
+    debugEcho("Matched TOPS rows={$matchedRows}");
+    debugEcho("Fallback matched rows={$fallbackMatchRows}");
+    debugEcho("No TOPS rows={$noTopsRows}");
+    debugEcho("Unmapped interface rows={$unmappedInterfaceRows}");
+    debugEcho("Empty/non-numeric Order rows={$emptyOrderRows}");
+    debugEcho("Order mismatch rows={$orderMismatchRows}");
 
     $dateStamp = date('Y-m-d');
     $outputPath = rtrim($outputDir, DIRECTORY_SEPARATOR)
