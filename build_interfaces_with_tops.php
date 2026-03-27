@@ -125,13 +125,60 @@ function findHeaderIndex(array $headerRow, array $candidates): int
         $normalizedCandidates[] = normalizeHeaderName($candidate);
     }
 
+    // Exact normalized match first.
     foreach ($headerRow as $index => $headerName) {
-        if (in_array(normalizeHeaderName((string) $headerName), $normalizedCandidates, true)) {
+        $normalizedHeader = normalizeHeaderName((string) $headerName);
+        if (in_array($normalizedHeader, $normalizedCandidates, true)) {
             return (int) $index;
         }
     }
 
+    // Fallback for sheets where headers include extra suffix/prefix text.
+    foreach ($headerRow as $index => $headerName) {
+        $normalizedHeader = normalizeHeaderName((string) $headerName);
+        if ($normalizedHeader === '') {
+            continue;
+        }
+
+        foreach ($normalizedCandidates as $candidate) {
+            if (
+                $candidate !== '' &&
+                (str_contains($normalizedHeader, $candidate) || str_contains($candidate, $normalizedHeader))
+            ) {
+                return (int) $index;
+            }
+        }
+    }
+
     return -1;
+}
+
+/**
+ * Locate the actual header row in Edge Devices sheet and required columns.
+ *
+ * @param array<int, array<int, string>> $edgeRows
+ * @return array{headerRowIndex: int, topsCol: int, srcCol: int, dstCol: int}
+ */
+function findEdgeHeaderAndColumns(array $edgeRows): array
+{
+    // Scan first N rows for the real header row.
+    $scanLimit = min(count($edgeRows), 200);
+    for ($rowIndex = 0; $rowIndex < $scanLimit; $rowIndex++) {
+        $row = $edgeRows[$rowIndex];
+        $topsCol = findHeaderIndex($row, ['Mnemonic;TOPS', 'Mnemonic TOPS', 'TOPS']);
+        $srcCol = findHeaderIndex($row, ['Quartz SRCs', 'Quartz SRC']);
+        $dstCol = findHeaderIndex($row, ['Quartz DSTs', 'Quartz DST']);
+        if ($topsCol >= 0 && $srcCol >= 0 && $dstCol >= 0) {
+            return [
+                'headerRowIndex' => $rowIndex,
+                'topsCol' => $topsCol,
+                'srcCol' => $srcCol,
+                'dstCol' => $dstCol,
+            ];
+        }
+    }
+
+    throw new RuntimeException('Required columns not found in Edge Devices sheet.');
 }
 
 /**
@@ -350,18 +397,16 @@ try {
         throw new RuntimeException('Edge Devices sheet is empty.');
     }
 
-    $edgeHeader = $edgeRows[0];
-    $topsCol = findHeaderIndex($edgeHeader, ['Mnemonic;TOPS', 'Mnemonic TOPS', 'TOPS']);
-    $srcCol = findHeaderIndex($edgeHeader, ['Quartz SRCs', 'Quartz SRC']);
-    $dstCol = findHeaderIndex($edgeHeader, ['Quartz DSTs', 'Quartz DST']);
-    if ($topsCol < 0 || $srcCol < 0 || $dstCol < 0) {
-        throw new RuntimeException('Required columns not found in Edge Devices sheet.');
-    }
+    $edgeHeaderInfo = findEdgeHeaderAndColumns($edgeRows);
+    $topsCol = $edgeHeaderInfo['topsCol'];
+    $srcCol = $edgeHeaderInfo['srcCol'];
+    $dstCol = $edgeHeaderInfo['dstCol'];
+    $edgeHeaderRowIndex = $edgeHeaderInfo['headerRowIndex'];
 
     $topsBySrcNumber = [];
     $topsByDstNumber = [];
     foreach ($edgeRows as $rowIndex => $row) {
-        if ($rowIndex === 0) {
+        if ($rowIndex <= $edgeHeaderRowIndex) {
             continue;
         }
 
