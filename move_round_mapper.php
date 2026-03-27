@@ -237,8 +237,21 @@ function sanitizeFilenamePart(string $value): string
  * Apply replacements from a prepared line->device map.
  *
  * Rules:
- * - If a target row line-name matches an active move-round mapping and device is ITXR, remove the row.
+ * - If TOPS/device column partially matches ITXR, remove the row.
  * - Only replace when a target row line-name matches, column 4 is SRC, and existing device is ITXE.
+ *
+ * @param array<int, array<int, string|null>> $targetRows
+ * @param array<string, string> $effectiveMap
+ * @return array<int, array<int, string|null>>
+ */
+function rowHasItxrTops(array $row): bool
+{
+    $topsName = trim((string) ($row[5] ?? ''));
+    return $topsName !== '' && stripos($topsName, 'ITXR') !== false;
+}
+
+/**
+ * Apply replacements and row filtering for one round snapshot.
  *
  * @param array<int, array<int, string|null>> $targetRows
  * @param array<string, string> $effectiveMap
@@ -246,12 +259,13 @@ function sanitizeFilenamePart(string $value): string
  */
 function applyDeviceMap(array $targetRows, array $effectiveMap): array
 {
-    if ($effectiveMap === []) {
-        return $targetRows;
-    }
-
     $resultRows = [];
     foreach ($targetRows as $row) {
+        // Global rule: never write rows where TOPS/device contains ITXR.
+        if (rowHasItxrTops($row)) {
+            continue;
+        }
+
         // Needs at least 7 columns to read line name and replace device name.
         if (!array_key_exists(6, $row) || !array_key_exists(5, $row)) {
             $resultRows[] = $row;
@@ -265,16 +279,17 @@ function applyDeviceMap(array $targetRows, array $effectiveMap): array
         }
 
         $deviceName = trim((string) $row[5]);
-        if (stripos($deviceName, 'ITXR') !== false) {
-            // If already ITXR for a matched line, drop this row.
-            continue;
-        }
 
         $srcDst = trim((string) ($row[3] ?? ''));
         $isSrc = strcasecmp($srcDst, 'SRC') === 0;
         $isItxe = stripos($deviceName, 'ITXE') !== false;
         if ($isSrc && $isItxe) {
             $row[5] = $effectiveMap[$lineName];
+        }
+
+        // If replacement introduces ITXR, exclude this row as well.
+        if (rowHasItxrTops($row)) {
+            continue;
         }
 
         $resultRows[] = $row;
