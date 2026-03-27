@@ -204,26 +204,6 @@ function columnLettersToIndex(string $letters): int
 }
 
 /**
- * @param array<int, string> $sparseRow
- * @return array<int, string>
- */
-function densifySparseRow(array $sparseRow): array
-{
-    if ($sparseRow === []) {
-        return [];
-    }
-
-    ksort($sparseRow);
-    $maxIndex = (int) max(array_keys($sparseRow));
-    $row = [];
-    for ($i = 0; $i <= $maxIndex; $i++) {
-        $row[$i] = $sparseRow[$i] ?? '';
-    }
-
-    return $row;
-}
-
-/**
  * @return array<int, string>
  */
 function readSharedStrings(ZipArchive $zip): array
@@ -354,7 +334,8 @@ function readXlsxSheetRows(string $xlsxPath, string $sheetName): array
                 $sparse[$colIndex] = cellValue($cell, $sharedStrings);
             }
 
-            $rows[] = densifySparseRow($sparse);
+            // Keep sparse rows to avoid high memory usage on wide sheets.
+            $rows[] = $sparse;
         }
 
         return $rows;
