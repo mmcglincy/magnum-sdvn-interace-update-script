@@ -37,6 +37,12 @@ declare(strict_types=1);
  *   6) TAG4
  *   7) TAG5
  *   8) TAG6
+ *   9) TAG7
+ *   10) TAG8
+ *   11) TAG9
+ *   12) TAG10
+ *   13) TAG11
+ *   14) TAG12
  */
 
 if ($argc < 3) {
@@ -106,7 +112,7 @@ function writeCsvRows(string $path, array $rows): void
 function normalizeTagRow(array $row): array
 {
     $normalized = [];
-    for ($i = 0; $i < 8; $i++) {
+    for ($i = 0; $i < 14; $i++) {
         $normalized[$i] = (string) ($row[$i] ?? '');
     }
 
@@ -188,8 +194,8 @@ function buildLookupByRound(array $lookupRows): array
  */
 function clearTransferredTags(array $row): array
 {
-    // TAG1..TAG6 are columns 3..8 (index 2..7)
-    for ($i = 2; $i <= 7; $i++) {
+    // TAG1..TAG12 are columns 3..14 (index 2..13)
+    for ($i = 2; $i <= 13; $i++) {
         $row[$i] = '';
     }
 
@@ -203,7 +209,7 @@ function clearTransferredTags(array $row): array
  */
 function applyTransferredTags(array $row, array $tags): array
 {
-    for ($i = 2; $i <= 7; $i++) {
+    for ($i = 2; $i <= 13; $i++) {
         $row[$i] = $tags[$i] ?? '';
     }
 
