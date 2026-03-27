@@ -259,28 +259,24 @@ function rowHasItxrInTopsColumn7(array $row): bool
 }
 
 /**
- * Resolve the effective line-name key for a target row.
- * First tries exact column-7 match, then partial match against active keys.
+ * Determine whether a row is in scope for current cumulative rounds
+ * using partial line-name matching against active keys.
  *
  * @param array<string, string> $effectiveMap
  */
-function resolveEffectiveLineKey(string $column7Value, array $effectiveMap): string
+function isScopedByPartialLineMatch(string $column7Value, array $effectiveMap): bool
 {
     if ($column7Value === '') {
-        return '';
-    }
-
-    if (array_key_exists($column7Value, $effectiveMap)) {
-        return $column7Value;
+        return false;
     }
 
     foreach ($effectiveMap as $lineName => $_device) {
         if ($lineName !== '' && stripos($column7Value, $lineName) !== false) {
-            return $lineName;
+            return true;
         }
     }
 
-    return '';
+    return false;
 }
 
 /**
@@ -308,8 +304,9 @@ function applyDeviceMap(array $targetRows, array $effectiveMap, string $roundLab
         }
 
         $column7Value = trim((string) $row[6]);
-        $resolvedLineKey = resolveEffectiveLineKey($column7Value, $effectiveMap);
-        if ($resolvedLineKey === '') {
+        $exactLineKey = array_key_exists($column7Value, $effectiveMap) ? $column7Value : '';
+        $isScoped = $exactLineKey !== '' || isScopedByPartialLineMatch($column7Value, $effectiveMap);
+        if (!$isScoped) {
             $resultRows[] = $row;
             continue;
         }
@@ -327,8 +324,9 @@ function applyDeviceMap(array $targetRows, array $effectiveMap, string $roundLab
         $srcDst = trim((string) ($row[3] ?? ''));
         $isSrc = strcasecmp($srcDst, 'SRC') === 0;
         $isItxe = stripos($deviceName, 'ITXE') !== false;
-        if ($isSrc && $isItxe) {
-            $row[5] = $effectiveMap[$resolvedLineKey];
+        // Replacement must be exact TOPS-name match only.
+        if ($exactLineKey !== '' && $isSrc && $isItxe) {
+            $row[5] = $effectiveMap[$exactLineKey];
             $replacedRows++;
         }
 
