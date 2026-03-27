@@ -418,6 +418,7 @@ try {
 
     $topsBySrcNumber = [];
     $topsByDstNumber = [];
+    $topsByAnyNumber = [];
     foreach ($edgeRows as $rowIndex => $row) {
         if ($rowIndex <= $edgeHeaderRowIndex) {
             continue;
@@ -436,13 +437,25 @@ try {
         if ($dstKey !== '' && !isset($topsByDstNumber[$dstKey])) {
             $topsByDstNumber[$dstKey] = $tops;
         }
+
+        // Defensive fallback for sheets with non-standard SRC/DST columns:
+        // index any numeric-looking value in the row to this TOPS value.
+        foreach ($row as $value) {
+            $anyKey = normalizeNumberKey((string) $value);
+            if ($anyKey !== '' && !isset($topsByAnyNumber[$anyKey])) {
+                $topsByAnyNumber[$anyKey] = $tops;
+            }
+        }
     }
     debugEcho('TOPS by SRC count=' . count($topsBySrcNumber));
     debugEcho('TOPS by DST count=' . count($topsByDstNumber));
+    debugEcho('TOPS by ANY count=' . count($topsByAnyNumber));
     $sampleSrc = array_slice(array_keys($topsBySrcNumber), 0, 5);
     $sampleDst = array_slice(array_keys($topsByDstNumber), 0, 5);
+    $sampleAny = array_slice(array_keys($topsByAnyNumber), 0, 5);
     debugEcho('Sample SRC keys: ' . implode(', ', $sampleSrc));
     debugEcho('Sample DST keys: ' . implode(', ', $sampleDst));
+    debugEcho('Sample ANY keys: ' . implode(', ', $sampleAny));
 
     $interfaceRows = readDelimitedRows($interfacePath);
     if ($interfaceRows === []) {
@@ -470,6 +483,7 @@ try {
     $emptyOrderRows = 0;
     $orderMismatchRows = 0;
     $noTopsRows = 0;
+    $expectedNumberFallbackRows = 0;
     $rowDebugLimit = 100;
     $rowDebugCount = 0;
 
@@ -500,25 +514,46 @@ try {
         } else {
             $sourceExpected = $interfaceMap[$interfaceKey]['source'];
             $destinationExpected = $interfaceMap[$interfaceKey]['destination'];
+            $expectedByDirection = $srcDst === 'DST' ? $destinationExpected : $sourceExpected;
 
             if ($srcDst === 'SRC') {
-                if ($orderKey === $sourceExpected) {
-                    $topsName = $topsBySrcNumber[$orderKey] ?? ($topsByDstNumber[$orderKey] ?? '');
-                } else {
+                if ($orderKey !== '' && $orderKey !== $sourceExpected) {
                     $orderMismatchRows++;
                 }
+                $topsName = $topsBySrcNumber[$sourceExpected]
+                    ?? $topsByDstNumber[$sourceExpected]
+                    ?? $topsByAnyNumber[$sourceExpected]
+                    ?? '';
             } elseif ($srcDst === 'DST') {
                 // Support either destination_number or source_number for DST rows.
-                if ($orderKey === $destinationExpected || $orderKey === $sourceExpected) {
-                    $topsName = $topsByDstNumber[$orderKey] ?? ($topsBySrcNumber[$orderKey] ?? '');
-                } else {
+                if ($orderKey !== '' && $orderKey !== $destinationExpected && $orderKey !== $sourceExpected) {
                     $orderMismatchRows++;
                 }
+                $topsName = $topsByDstNumber[$destinationExpected]
+                    ?? $topsBySrcNumber[$destinationExpected]
+                    ?? $topsByAnyNumber[$destinationExpected]
+                    ?? $topsByDstNumber[$sourceExpected]
+                    ?? $topsBySrcNumber[$sourceExpected]
+                    ?? $topsByAnyNumber[$sourceExpected]
+                    ?? '';
             } else {
-                if ($orderKey === $sourceExpected || $orderKey === $destinationExpected) {
-                    $topsName = $topsBySrcNumber[$orderKey] ?? ($topsByDstNumber[$orderKey] ?? '');
-                } else {
+                if ($orderKey !== '' && $orderKey !== $sourceExpected && $orderKey !== $destinationExpected) {
                     $orderMismatchRows++;
+                }
+                $topsName = $topsBySrcNumber[$expectedByDirection]
+                    ?? $topsByDstNumber[$expectedByDirection]
+                    ?? $topsByAnyNumber[$expectedByDirection]
+                    ?? '';
+            }
+
+            if ($topsName !== '' && $orderKey !== '' && $orderKey !== $expectedByDirection) {
+                $expectedNumberFallbackRows++;
+                if ($rowDebugCount < $rowDebugLimit) {
+                    debugEcho(
+                        "Row {$rowIndex}: matched via expected number {$expectedByDirection} "
+                        . "(Order was {$orderKey}) for '{$interfaceName}'"
+                    );
+                    $rowDebugCount++;
                 }
             }
         }
@@ -542,6 +577,7 @@ try {
     debugEcho("Processed interface rows={$totalRows}");
     debugEcho("Matched TOPS rows={$matchedRows}");
     debugEcho("No TOPS rows={$noTopsRows}");
+    debugEcho("Expected-number fallback rows={$expectedNumberFallbackRows}");
     debugEcho("Unmapped interface rows={$unmappedInterfaceRows}");
     debugEcho("Empty/non-numeric Order rows={$emptyOrderRows}");
     debugEcho("Order mismatch rows={$orderMismatchRows}");
