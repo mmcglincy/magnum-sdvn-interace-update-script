@@ -39,43 +39,6 @@ if (!class_exists('ZipArchive')) {
     exit(1);
 }
 
-/**
- * Canonical interface mapping:
- * interface_name => [source_number, destination_number]
- *
- * @return array<string, array{source: string, destination: string}>
- */
-function interfaceNumberMap(): array
-{
-    $raw = [
-        'AFFILIATE FONT DSK' => ['4096', '4096'],
-        'test_set' => ['4060', '4060'],
-        'CT to STU TLM' => ['4055', '4055'],
-        'CT to NOC TLM' => ['4084', '4084'],
-        'DOTCOM DSK' => ['4097', '4097'],
-        'QC LON' => ['4022', '4022'],
-        'NEWSOURCE DSK' => ['4095', '4095'],
-        'TOC to NOC TLM' => ['4080', '4080'],
-        'TOC to STU TLM' => ['4056', '4056'],
-        'TIMING' => ['4040', '4040'],
-        'CT CORE_2' => ['4052', '4052'],
-        'TIMING ACQ' => ['4041', '4041'],
-        'CT DRE CH' => ['4073', '4073'],
-        'JXS-TALLY' => ['4090', '4090'],
-        'CLOUD-MASTER' => ['4085', '4085'],
-    ];
-
-    $map = [];
-    foreach ($raw as $name => [$source, $destination]) {
-        $map[normalizeInterfaceName($name)] = [
-            'source' => $source,
-            'destination' => $destination,
-        ];
-    }
-
-    return $map;
-}
-
 function normalizeInterfaceName(string $name): string
 {
     $name = trim($name);
@@ -167,7 +130,7 @@ function findHeaderIndex(array $headerRow, array $candidates): int
  * Locate the actual header row in Edge Devices sheet and required columns.
  *
  * @param array<int, array<int, string>> $edgeRows
- * @return array{headerRowIndex: int, topsCol: int, srcCol: int, dstCol: int}
+ * @return array{headerRowIndex: int, topsCol: int}
  */
 function findEdgeHeaderAndColumns(array $edgeRows): array
 {
@@ -176,19 +139,148 @@ function findEdgeHeaderAndColumns(array $edgeRows): array
     for ($rowIndex = 0; $rowIndex < $scanLimit; $rowIndex++) {
         $row = $edgeRows[$rowIndex];
         $topsCol = findHeaderIndex($row, ['Mnemonic;TOPS', 'Mnemonic TOPS', 'TOPS']);
-        $srcCol = findHeaderIndex($row, ['Quartz SRCs', 'Quartz SRC']);
-        $dstCol = findHeaderIndex($row, ['Quartz DSTs', 'Quartz DST']);
-        if ($topsCol >= 0 && $srcCol >= 0 && $dstCol >= 0) {
+        $hasQuartzColumns = false;
+        foreach ($row as $headerCell) {
+            $headerNorm = normalizeHeaderName((string) $headerCell);
+            if (str_contains($headerNorm, 'quartzsrcs') || str_contains($headerNorm, 'quartzdsts')) {
+                $hasQuartzColumns = true;
+                break;
+            }
+        }
+
+        if ($topsCol >= 0 && $hasQuartzColumns) {
             return [
                 'headerRowIndex' => $rowIndex,
                 'topsCol' => $topsCol,
-                'srcCol' => $srcCol,
-                'dstCol' => $dstCol,
             ];
         }
     }
 
     throw new RuntimeException('Required columns not found in Edge Devices sheet.');
+}
+
+/**
+ * @return array{direction: string, listen: string, interface: string}|null
+ */
+function parseEdgeInterfaceHeader(string $headerCell): ?array
+{
+    $raw = trim($headerCell);
+    if ($raw === '') {
+        return null;
+    }
+
+    $parts = array_map('trim', explode(';', $raw));
+    if (count($parts) < 3) {
+        return null;
+    }
+
+    $directionRaw = strtolower($parts[0]);
+    $direction = '';
+    if (str_contains($directionRaw, 'quartz src')) {
+        $direction = 'SRC';
+    } elseif (str_contains($directionRaw, 'quartz dst')) {
+        $direction = 'DST';
+    }
+    if ($direction === '') {
+        return null;
+    }
+
+    $listen = normalizeNumberKey($parts[1]);
+    $interface = normalizeInterfaceName(implode(';', array_slice($parts, 2)));
+    if ($listen === '' || $interface === '') {
+        return null;
+    }
+
+    return [
+        'direction' => $direction,
+        'listen' => $listen,
+        'interface' => $interface,
+    ];
+}
+
+/**
+ * Build map from interface + listen + direction to column index.
+ *
+ * @param array<int, string> $edgeHeaderRow
+ * @return array<string, array<string, array<string, int>>>
+ */
+function buildEdgeColumnLookup(array $edgeHeaderRow): array
+{
+    $lookup = [
+        'SRC' => [],
+        'DST' => [],
+    ];
+
+    foreach ($edgeHeaderRow as $colIndex => $headerCell) {
+        $parsed = parseEdgeInterfaceHeader((string) $headerCell);
+        if ($parsed === null) {
+            continue;
+        }
+
+        $direction = $parsed['direction'];
+        $interface = $parsed['interface'];
+        $listen = $parsed['listen'];
+        if (!isset($lookup[$direction][$interface])) {
+            $lookup[$direction][$interface] = [];
+        }
+
+        $lookup[$direction][$interface][$listen] = (int) $colIndex;
+    }
+
+    return $lookup;
+}
+
+/**
+ * Build TOPS lookup by direction/interface/listen/order from edge data rows.
+ *
+ * @param array<int, array<int, string>> $edgeRows
+ * @param array<string, array<string, array<string, int>>> $edgeColumnLookup
+ * @return array<string, array<string, array<string, array<string, string>>>>
+ */
+function buildTopsLookup(
+    array $edgeRows,
+    int $edgeHeaderRowIndex,
+    int $topsCol,
+    array $edgeColumnLookup
+): array {
+    $topsByDirectionInterfaceListenOrder = [
+        'SRC' => [],
+        'DST' => [],
+    ];
+
+    foreach ($edgeRows as $rowIndex => $row) {
+        if ($rowIndex <= $edgeHeaderRowIndex) {
+            continue;
+        }
+
+        $tops = trim((string) ($row[$topsCol] ?? ''));
+        if ($tops === '') {
+            continue;
+        }
+
+        foreach (['SRC', 'DST'] as $direction) {
+            foreach ($edgeColumnLookup[$direction] as $interfaceKey => $listenToCol) {
+                foreach ($listenToCol as $listenKey => $colIndex) {
+                    $orderKey = normalizeNumberKey((string) ($row[$colIndex] ?? ''));
+                    if ($orderKey === '') {
+                        continue;
+                    }
+
+                    if (!isset($topsByDirectionInterfaceListenOrder[$direction][$interfaceKey])) {
+                        $topsByDirectionInterfaceListenOrder[$direction][$interfaceKey] = [];
+                    }
+                    if (!isset($topsByDirectionInterfaceListenOrder[$direction][$interfaceKey][$listenKey])) {
+                        $topsByDirectionInterfaceListenOrder[$direction][$interfaceKey][$listenKey] = [];
+                    }
+                    if (!isset($topsByDirectionInterfaceListenOrder[$direction][$interfaceKey][$listenKey][$orderKey])) {
+                        $topsByDirectionInterfaceListenOrder[$direction][$interfaceKey][$listenKey][$orderKey] = $tops;
+                    }
+                }
+            }
+        }
+    }
+
+    return $topsByDirectionInterfaceListenOrder;
 }
 
 /**
@@ -409,53 +501,16 @@ try {
 
     $edgeHeaderInfo = findEdgeHeaderAndColumns($edgeRows);
     $topsCol = $edgeHeaderInfo['topsCol'];
-    $srcCol = $edgeHeaderInfo['srcCol'];
-    $dstCol = $edgeHeaderInfo['dstCol'];
     $edgeHeaderRowIndex = $edgeHeaderInfo['headerRowIndex'];
-    debugEcho(
-        "Edge header row={$edgeHeaderRowIndex}, topsCol={$topsCol}, srcCol={$srcCol}, dstCol={$dstCol}"
-    );
+    debugEcho("Edge header row={$edgeHeaderRowIndex}, topsCol={$topsCol}");
 
-    $topsBySrcNumber = [];
-    $topsByDstNumber = [];
-    $topsByAnyNumber = [];
-    foreach ($edgeRows as $rowIndex => $row) {
-        if ($rowIndex <= $edgeHeaderRowIndex) {
-            continue;
-        }
-
-        $tops = trim((string) ($row[$topsCol] ?? ''));
-        if ($tops === '') {
-            continue;
-        }
-
-        $srcKey = normalizeNumberKey((string) ($row[$srcCol] ?? ''));
-        $dstKey = normalizeNumberKey((string) ($row[$dstCol] ?? ''));
-        if ($srcKey !== '' && !isset($topsBySrcNumber[$srcKey])) {
-            $topsBySrcNumber[$srcKey] = $tops;
-        }
-        if ($dstKey !== '' && !isset($topsByDstNumber[$dstKey])) {
-            $topsByDstNumber[$dstKey] = $tops;
-        }
-
-        // Defensive fallback for sheets with non-standard SRC/DST columns:
-        // index any numeric-looking value in the row to this TOPS value.
-        foreach ($row as $value) {
-            $anyKey = normalizeNumberKey((string) $value);
-            if ($anyKey !== '' && !isset($topsByAnyNumber[$anyKey])) {
-                $topsByAnyNumber[$anyKey] = $tops;
-            }
-        }
-    }
-    debugEcho('TOPS by SRC count=' . count($topsBySrcNumber));
-    debugEcho('TOPS by DST count=' . count($topsByDstNumber));
-    debugEcho('TOPS by ANY count=' . count($topsByAnyNumber));
-    $sampleSrc = array_slice(array_keys($topsBySrcNumber), 0, 5);
-    $sampleDst = array_slice(array_keys($topsByDstNumber), 0, 5);
-    $sampleAny = array_slice(array_keys($topsByAnyNumber), 0, 5);
-    debugEcho('Sample SRC keys: ' . implode(', ', $sampleSrc));
-    debugEcho('Sample DST keys: ' . implode(', ', $sampleDst));
-    debugEcho('Sample ANY keys: ' . implode(', ', $sampleAny));
+    $edgeHeaderRow = $edgeRows[$edgeHeaderRowIndex];
+    $edgeColumnLookup = buildEdgeColumnLookup($edgeHeaderRow);
+    $topsLookup = buildTopsLookup($edgeRows, $edgeHeaderRowIndex, $topsCol, $edgeColumnLookup);
+    debugEcho('Edge SRC interface columns=' . count($edgeColumnLookup['SRC']));
+    debugEcho('Edge DST interface columns=' . count($edgeColumnLookup['DST']));
+    debugEcho('TOPS SRC interfaces in lookup=' . count($topsLookup['SRC']));
+    debugEcho('TOPS DST interfaces in lookup=' . count($topsLookup['DST']));
 
     $interfaceRows = readDelimitedRows($interfacePath);
     if ($interfaceRows === []) {
@@ -485,9 +540,8 @@ try {
     $matchedRows = 0;
     $unmappedInterfaceRows = 0;
     $emptyOrderRows = 0;
-    $orderMismatchRows = 0;
+    $missingEdgeColumnRows = 0;
     $noTopsRows = 0;
-    $expectedNumberFallbackRows = 0;
     $rowDebugLimit = 100;
     $rowDebugCount = 0;
 
@@ -498,15 +552,23 @@ try {
         $totalRows++;
 
         $interfaceName = trim((string) ($row[$interfaceNameCol] ?? ''));
+        $listenPortKey = normalizeNumberKey((string) ($row[1] ?? ''));
         $srcDst = strtoupper(trim((string) ($row[$srcDstCol] ?? '')));
         $orderKey = normalizeNumberKey((string) ($row[$orderCol] ?? ''));
 
         $topsName = '';
         $interfaceKey = normalizeInterfaceName($interfaceName);
-        if (!isset($interfaceMap[$interfaceKey])) {
+        $direction = $srcDst === 'DST' ? 'DST' : 'SRC';
+        if (!isset($edgeColumnLookup[$direction][$interfaceKey])) {
             $unmappedInterfaceRows++;
             if ($rowDebugCount < $rowDebugLimit) {
-                debugEcho("Row {$rowIndex}: interface not mapped: '{$interfaceName}'");
+                debugEcho("Row {$rowIndex}: interface not found in Edge columns: '{$interfaceName}' ({$direction})");
+                $rowDebugCount++;
+            }
+        } elseif ($listenPortKey === '') {
+            $missingEdgeColumnRows++;
+            if ($rowDebugCount < $rowDebugLimit) {
+                debugEcho("Row {$rowIndex}: empty/non-numeric Listen Port for '{$interfaceName}'");
                 $rowDebugCount++;
             }
         } elseif ($orderKey === '') {
@@ -516,49 +578,18 @@ try {
                 $rowDebugCount++;
             }
         } else {
-            $sourceExpected = $interfaceMap[$interfaceKey]['source'];
-            $destinationExpected = $interfaceMap[$interfaceKey]['destination'];
-            $expectedByDirection = $srcDst === 'DST' ? $destinationExpected : $sourceExpected;
-
-            if ($srcDst === 'SRC') {
-                if ($orderKey !== '' && $orderKey !== $sourceExpected) {
-                    $orderMismatchRows++;
-                }
-                $topsName = $topsBySrcNumber[$sourceExpected]
-                    ?? $topsByDstNumber[$sourceExpected]
-                    ?? $topsByAnyNumber[$sourceExpected]
-                    ?? '';
-            } elseif ($srcDst === 'DST') {
-                // Support either destination_number or source_number for DST rows.
-                if ($orderKey !== '' && $orderKey !== $destinationExpected && $orderKey !== $sourceExpected) {
-                    $orderMismatchRows++;
-                }
-                $topsName = $topsByDstNumber[$destinationExpected]
-                    ?? $topsBySrcNumber[$destinationExpected]
-                    ?? $topsByAnyNumber[$destinationExpected]
-                    ?? $topsByDstNumber[$sourceExpected]
-                    ?? $topsBySrcNumber[$sourceExpected]
-                    ?? $topsByAnyNumber[$sourceExpected]
-                    ?? '';
-            } else {
-                if ($orderKey !== '' && $orderKey !== $sourceExpected && $orderKey !== $destinationExpected) {
-                    $orderMismatchRows++;
-                }
-                $topsName = $topsBySrcNumber[$expectedByDirection]
-                    ?? $topsByDstNumber[$expectedByDirection]
-                    ?? $topsByAnyNumber[$expectedByDirection]
-                    ?? '';
-            }
-
-            if ($topsName !== '' && $orderKey !== '' && $orderKey !== $expectedByDirection) {
-                $expectedNumberFallbackRows++;
+            $listenColumns = $edgeColumnLookup[$direction][$interfaceKey];
+            $targetListenKey = $listenPortKey;
+            if (!isset($listenColumns[$targetListenKey])) {
+                $missingEdgeColumnRows++;
                 if ($rowDebugCount < $rowDebugLimit) {
                     debugEcho(
-                        "Row {$rowIndex}: matched via expected number {$expectedByDirection} "
-                        . "(Order was {$orderKey}) for '{$interfaceName}'"
+                        "Row {$rowIndex}: no Edge {$direction} column for interface='{$interfaceName}', Listen Port='{$listenPortKey}'"
                     );
                     $rowDebugCount++;
                 }
+            } else {
+                $topsName = $topsLookup[$direction][$interfaceKey][$targetListenKey][$orderKey] ?? '';
             }
         }
 
@@ -581,10 +612,9 @@ try {
     debugEcho("Processed interface rows={$totalRows}");
     debugEcho("Matched TOPS rows={$matchedRows}");
     debugEcho("No TOPS rows={$noTopsRows}");
-    debugEcho("Expected-number fallback rows={$expectedNumberFallbackRows}");
-    debugEcho("Unmapped interface rows={$unmappedInterfaceRows}");
+    debugEcho("Interface not found in Edge columns rows={$unmappedInterfaceRows}");
+    debugEcho("Missing/invalid Listen Port or Edge column rows={$missingEdgeColumnRows}");
     debugEcho("Empty/non-numeric Order rows={$emptyOrderRows}");
-    debugEcho("Order mismatch rows={$orderMismatchRows}");
 
     $dateStamp = date('Y-m-d');
     $outputPath = rtrim($outputDir, DIRECTORY_SEPARATOR)
