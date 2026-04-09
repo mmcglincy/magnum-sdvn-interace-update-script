@@ -23,6 +23,15 @@ csv_escape() {
   printf '"%s"' "$value"
 }
 
+strip_ssh_noise() {
+  local value="$1"
+  # Remove known-hosts warnings that may still appear on stdout/stderr.
+  value="$(printf '%s' "$value" | sed -E \
+    -e "/^Warning: Permanently added .* known hosts\\./d" \
+    -e "/^Permanently added .* known hosts\\./d")"
+  printf '%s' "$value"
+}
+
 format_uptime_days_hours() {
   local raw="$1"
   raw="$(trim_spaces "$raw")"
@@ -127,6 +136,7 @@ while IFS=, read -r first_col _rest || [[ -n "${first_col:-}" ]]; do
     sshpass -p "$password" ssh \
       -o StrictHostKeyChecking=no \
       -o UserKnownHostsFile=/dev/null \
+      -o LogLevel=ERROR \
       -o ConnectTimeout=10 \
       -o BatchMode=no \
       "$user@$ip" \
@@ -135,7 +145,9 @@ while IFS=, read -r first_col _rest || [[ -n "${first_col:-}" ]]; do
   rc=$?
   set -e
 
+  uptime_output="$(strip_ssh_noise "$uptime_output")"
   uptime_output="${uptime_output//$'\n'/ }"
+  uptime_output="$(trim_spaces "$uptime_output")"
 
   if [[ $rc -eq 0 ]]; then
     status="ok"
