@@ -25,17 +25,32 @@ csv_escape() {
 
 format_uptime_days_hours() {
   local raw="$1"
+  raw="$(trim_spaces "$raw")"
+
+  # Preferred format: remote seconds from /proc/uptime.
+  if [[ "$raw" =~ ^[0-9]+$ ]]; then
+    local total_seconds="$raw"
+    local days=$(( total_seconds / 86400 ))
+    local hours=$(( (total_seconds % 86400) / 3600 ))
+    printf '%s days %s hours' "$days" "$hours"
+    return
+  fi
+
   local days=0
   local hours=0
   local minute_hours=0
 
-  # Prefer parsing "up X days, Y hours, Z minutes" from uptime -p.
+  # Parse "up X weeks, Y days, Z hours, N minutes" style outputs.
+  if [[ "$raw" =~ ([0-9]+)[[:space:]]+week ]]; then
+    days=$(( days + BASH_REMATCH[1] * 7 ))
+  fi
+
   if [[ "$raw" =~ ([0-9]+)[[:space:]]+day ]]; then
-    days="${BASH_REMATCH[1]}"
+    days=$(( days + BASH_REMATCH[1] ))
   fi
 
   if [[ "$raw" =~ ([0-9]+)[[:space:]]+hour ]]; then
-    hours="${BASH_REMATCH[1]}"
+    hours=$(( hours + BASH_REMATCH[1] ))
   fi
 
   # Convert minutes into one additional hour bucket if needed.
@@ -43,18 +58,21 @@ format_uptime_days_hours() {
     minute_hours=$(( BASH_REMATCH[1] / 60 ))
   fi
 
-  # Fallback parse for classic "up 2 days,  3:41" format.
-  if [[ "$days" -eq 0 && "$hours" -eq 0 && "$raw" =~ ([0-9]+)[[:space:]]+day ]]; then
-    days="${BASH_REMATCH[1]}"
-  fi
+  # Fallback parse for classic "up 23 days,  4:24" format.
   if [[ "$raw" =~ ([0-9]{1,2}):([0-9]{2}) ]]; then
-    hours=$(( hours + BASH_REMATCH[1] ))
+    hours=$(( hours + 10#${BASH_REMATCH[1]} ))
     minute_hours=$(( minute_hours + (BASH_REMATCH[2] / 60) ))
   fi
 
   hours=$(( hours + minute_hours ))
   days=$(( days + (hours / 24) ))
   hours=$(( hours % 24 ))
+
+  # If parsing still produced no signal, return raw string.
+  if [[ "$days" -eq 0 && "$hours" -eq 0 && ! "$raw" =~ [0-9]+[[:space:]]*(day|hour|week|:) ]]; then
+    printf '%s' "$raw"
+    return
+  fi
 
   printf '%s days %s hours' "$days" "$hours"
 }
@@ -112,7 +130,7 @@ while IFS=, read -r first_col _rest || [[ -n "${first_col:-}" ]]; do
       -o ConnectTimeout=10 \
       -o BatchMode=no \
       "$user@$ip" \
-      "uptime -p 2>/dev/null || uptime" < /dev/null 2>&1
+      "if [ -r /proc/uptime ]; then awk '{print int(\$1)}' /proc/uptime; else uptime -p 2>/dev/null || uptime; fi" < /dev/null 2>&1
   )"
   rc=$?
   set -e
