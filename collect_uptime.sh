@@ -23,6 +23,42 @@ csv_escape() {
   printf '"%s"' "$value"
 }
 
+format_uptime_days_hours() {
+  local raw="$1"
+  local days=0
+  local hours=0
+  local minute_hours=0
+
+  # Prefer parsing "up X days, Y hours, Z minutes" from uptime -p.
+  if [[ "$raw" =~ ([0-9]+)[[:space:]]+day ]]; then
+    days="${BASH_REMATCH[1]}"
+  fi
+
+  if [[ "$raw" =~ ([0-9]+)[[:space:]]+hour ]]; then
+    hours="${BASH_REMATCH[1]}"
+  fi
+
+  # Convert minutes into one additional hour bucket if needed.
+  if [[ "$raw" =~ ([0-9]+)[[:space:]]+minute ]]; then
+    minute_hours=$(( BASH_REMATCH[1] / 60 ))
+  fi
+
+  # Fallback parse for classic "up 2 days,  3:41" format.
+  if [[ "$days" -eq 0 && "$hours" -eq 0 && "$raw" =~ ([0-9]+)[[:space:]]+day ]]; then
+    days="${BASH_REMATCH[1]}"
+  fi
+  if [[ "$raw" =~ ([0-9]{1,2}):([0-9]{2}) ]]; then
+    hours=$(( hours + BASH_REMATCH[1] ))
+    minute_hours=$(( minute_hours + (BASH_REMATCH[2] / 60) ))
+  fi
+
+  hours=$(( hours + minute_hours ))
+  days=$(( days + (hours / 24) ))
+  hours=$(( hours % 24 ))
+
+  printf '%s days %s hours' "$days" "$hours"
+}
+
 if [[ $# -lt 3 || $# -gt 4 ]]; then
   usage
   exit 1
@@ -74,8 +110,9 @@ while IFS=, read -r first_col _rest || [[ -n "${first_col:-}" ]]; do
       -o StrictHostKeyChecking=no \
       -o UserKnownHostsFile=/dev/null \
       -o ConnectTimeout=10 \
+      -o BatchMode=no \
       "$user@$ip" \
-      "uptime -p 2>/dev/null || uptime" 2>&1
+      "uptime -p 2>/dev/null || uptime" < /dev/null 2>&1
   )"
   rc=$?
   set -e
@@ -84,6 +121,7 @@ while IFS=, read -r first_col _rest || [[ -n "${first_col:-}" ]]; do
 
   if [[ $rc -eq 0 ]]; then
     status="ok"
+    uptime_output="$(format_uptime_days_hours "$uptime_output")"
   else
     status="error"
   fi
